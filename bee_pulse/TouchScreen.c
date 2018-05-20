@@ -44,7 +44,7 @@ static long map(long x, long in_min, long in_max, long out_min, long out_max)
 
 void TS_getPoint(TSPoint* result){
 	int x, y, z;
-	int samples[2];
+	int samples[4];
 	bool valid;
 
 	valid = true;
@@ -60,8 +60,9 @@ void TS_getPoint(TSPoint* result){
 
 	samples[0] = analogRead(YP_PIN);
 	samples[1] = analogRead(YP_PIN);
+	samples[2] = analogRead(YP_PIN);
 
-	if (samples[0] != samples[1]) {
+	if((samples[0] != samples[1]) || (samples[0] != samples[2])){
 		valid = false;
 	}
 
@@ -76,12 +77,13 @@ void TS_getPoint(TSPoint* result){
   
 	samples[0] = analogRead(XM_PIN);
 	samples[1] = analogRead(XM_PIN);
+	samples[2] = analogRead(XM_PIN);
 
-	if (samples[0] != samples[1]) {
+	if((samples[0] != samples[1]) || (samples[0] != samples[2])){
 		valid = false;
 	}
 
-	y = 1023-samples[1];
+	y = samples[1];
 
 	// Set X+ to ground
 	XP_SET_OUTPUT();
@@ -93,7 +95,7 @@ void TS_getPoint(TSPoint* result){
 	YP_SET_LOW();
 	YP_SET_INPUT();
 
-	if ((!valid)) {
+	if (!valid) {
 		z = 0;
 	}else{
 		int z1 = analogRead(XM_PIN);
@@ -109,6 +111,11 @@ void TS_getPoint(TSPoint* result){
 	result->x = map(x, TS_MINX, TS_MAXX, TFTWIDTH, 0);
 	result->y = TFTHEIGHT - map(y, TS_MINY, TS_MAXY, TFTHEIGHT, 0);
 	result->z = z;
+
+	if (!valid) {
+		result->y = -1;
+	}
+
 	XM_SET_OUTPUT();
 	YP_SET_OUTPUT();
 }

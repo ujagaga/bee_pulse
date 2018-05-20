@@ -22,265 +22,311 @@
 #include "time_ctrl.h"
 #include "uart.h"
 
+
 #define ON		true
 #define OFF		false
+#define LONG_PRESS_TIME		(2500)
 
+static timing_t timeConfig = {0};
 uint16_t main_ID;
-uint16_t setTempX;
-uint16_t setTempY;
-uint16_t statusX;
-uint16_t statusY;
 
-int16_t avgTemp = 0;
-gfx_btn btnUp = {0};
-gfx_btn btnDown = {0};
-gfx_btn btnStatus = {0};
-uint32_t dsErrTime = 0;
-uint32_t upBtnTime = 0;
-uint32_t downBtnTime = 0;
-uint32_t reqTempChangeTime = 0;
-bool lastState;
+uint8_t EEMEM savedPulse = 10;		/* x1us */
+uint8_t EEMEM savedPause = 3;		/* x1ms */
+uint8_t EEMEM savedActive = 11;		/* x10ms */
+uint8_t EEMEM savedInactive = 10;	/* x0.1s */
+uint8_t EEMEM savedTotal = 10;		/* x1min */
 
-uint8_t requestedPulse;
-uint8_t requestedPause;
-uint8_t EEMEM savedRequestedPulse = 10;	/* in us */
-uint8_t EEMEM savedRequestedPause = 3;	/* in ms */
+gfx_btn btn_pulseUp;
+gfx_btn btn_pulseDown;
+gfx_btn btn_pauseUp;
+gfx_btn btn_pauseDown;
+gfx_btn btn_activeUp;
+gfx_btn btn_activeDown;
+gfx_btn btn_inactiveUp;
+gfx_btn btn_inactiveDown;
+gfx_btn btn_totalUp;
+gfx_btn btn_totalDown;
+gfx_btn btn_start;
 
-static void drawRequestedTemp(void){
-	GFX_setCursor(setTempX, setTempY);
-	GFX_setTextSize(3);
-	GFX_setTextColor(BLUE, SCR_CLR);
-	GFX_printDec(requestedPulse/10);
-	GFX_printStr(",");
-	GFX_printDec(requestedPulse%10);
-}
+#define BTN_COUNT				(10u)
 
-static void drawStatus(bool state){
-	if(state == ON){
-		btnStatus.fillcolor = RED;
-		btnStatus.textcolor = YELLOW;
-		btnStatus.label = "on  -///-";
-	}else{
-		btnStatus.fillcolor = BLACK;
-		btnStatus.textcolor = RED;
-		btnStatus.label = "off -///-";
-	}
-	GFX_btnDraw(&btnStatus, false);
-}
+typedef struct{
+	gfx_btn* btnPtr;			/* Pointer to the button */
+	uint32_t touctTimestamp;	/* time of the last detected touch */
+	uint8_t* ctrlVarPtr;		/* pointer to the variable to control with this button */
+	uint8_t increment;			/* Increment to add to the variable when this button is pressed */
+	uint16_t cursorY;			/* location on the screen of the variable to re-draw */
+}btnUpdate_t;
+
+btnUpdate_t touchArray[BTN_COUNT] = {{0}};
+
+bool timerStarted = false;
 
 static void refreshScr(void){
-	/* Write labels */
+	GFX_setCursor(2, 2);
+	GFX_setTextSize(2);
+
 	GFX_setTextColor(BLUE, SCR_CLR);
+	GFX_printStr("Puls:\n");
+	GFX_setTextColor(GREEN, SCR_CLR);
+	GFX_setTextSize(4);
+	touchArray[0].cursorY = GFX_getCursorY();
+	touchArray[1].cursorY = GFX_getCursorY();
+	GFX_printDec(timeConfig.pulse);
 	GFX_setTextSize(2);
-	GFX_setCursor(2, 60);
-	GFX_printStr("Podeseno: ");
-	GFX_setTextSize(3);
-	setTempX = GFX_getCursorX();
-	GFX_setCursor(setTempX, 60 - TXTH);
-	setTempY = GFX_getCursorY();
+	GFX_setCursor(130, GFX_getCursorY() + 12);
+	GFX_printStr("us ");
+	GFX_setCursor(3, GFX_getCursorY() + 24);
+	GFX_drawFastHLine(GFX_getCursorX(), GFX_getCursorY() - 4, GFX_getWidth(), RED);
 
-	GFX_printDec(requestedPulse/10);
-	GFX_printStr(",");
-	GFX_printDec(requestedPulse%10);
-	/* print degree celsius */
-	GFX_printChar(247);
-	GFX_printChar(67);
-	GFX_printStr("\n");
-
+	GFX_setTextColor(BLUE, SCR_CLR);
+	GFX_printStr("Pauza:\n");
+	GFX_setTextColor(GREEN, SCR_CLR);
+	GFX_setTextSize(4);
+	touchArray[2].cursorY = GFX_getCursorY();
+	touchArray[3].cursorY = GFX_getCursorY();
+	GFX_printDec(timeConfig.pause);
 	GFX_setTextSize(2);
-	GFX_printStr("Srednja temperatura\n\n");
-	GFX_setTextColor(YELLOW, SCR_CLR);
+	GFX_setCursor(130, GFX_getCursorY() + 12);
+	GFX_printStr("ms ");
+	GFX_setCursor(3, GFX_getCursorY() + 24);
+	GFX_drawFastHLine(GFX_getCursorX(), GFX_getCursorY() - 4, GFX_getWidth(), RED);
 
-	if(avgTemp != 0){
-		if(avgTemp == 0){
-			GFX_setTextSize(4);
-			GFX_printStr("GRESKA!\n");
-			GFX_setTextSize(3);
-			GFX_printStr("Proverite sondu.");
-		}
-		else if(avgTemp < 0){
-			GFX_setTextSize(3);
-			GFX_printStr("Temperatura\nispod nule.");
-		}else{
-			GFX_setCursor(GFX_getCursorX() + TXTW, GFX_getCursorY());
-			GFX_setTextSize(10);
-			GFX_printDec(avgTemp/10);
-			GFX_setTextSize(7);
-			GFX_setCursor(GFX_getCursorX(), GFX_getCursorY() + TXTH * 3);
-			GFX_printStr(",");
-			GFX_setCursor(GFX_getCursorX(), GFX_getCursorY() - TXTH * 3);
-			GFX_setTextSize(10);
-			GFX_printDec(avgTemp%10);
-		}
-	}
+	GFX_setTextColor(BLUE, SCR_CLR);
+	GFX_printStr("Activan:\n");
+	GFX_setTextColor(GREEN, SCR_CLR);
+	GFX_setTextSize(4);
+	touchArray[4].cursorY = GFX_getCursorY();
+	touchArray[5].cursorY = GFX_getCursorY();
+	GFX_printDec(timeConfig.active * 1000);
+	GFX_setTextSize(2);
+	GFX_setCursor(130, GFX_getCursorY() + 12);
+	GFX_printStr("ms ");
+	GFX_setCursor(3, GFX_getCursorY() + 24);
+	GFX_drawFastHLine(GFX_getCursorX(), GFX_getCursorY() - 4, GFX_getWidth(), RED);
+
+	GFX_setTextColor(BLUE, SCR_CLR);
+	GFX_printStr("Neactivan:\n");
+	GFX_setTextColor(GREEN, SCR_CLR);
+	GFX_setTextSize(4);
+	touchArray[6].cursorY = GFX_getCursorY();
+	touchArray[7].cursorY = GFX_getCursorY();
+	GFX_printDec(timeConfig.inactive * 1000);
+	GFX_setTextSize(2);
+	GFX_setCursor(130, GFX_getCursorY() + 12);
+	GFX_printStr("ms ");
+	GFX_setCursor(3, GFX_getCursorY() + 24);
+	GFX_drawFastHLine(GFX_getCursorX(), GFX_getCursorY() - 4, GFX_getWidth(), RED);
+
+	GFX_setTextColor(BLUE, SCR_CLR);
+	GFX_printStr("Trajanje:\n");
+	GFX_setTextColor(GREEN, SCR_CLR);
+	GFX_setTextSize(4);
+	touchArray[8].cursorY = GFX_getCursorY();
+	touchArray[9].cursorY = GFX_getCursorY();
+	GFX_printDec(timeConfig.total);
+	GFX_setTextSize(2);
+	GFX_setCursor(130, GFX_getCursorY() + 12);
+	GFX_printStr("min ");
+	GFX_setCursor(3, GFX_getCursorY() + 24);
+	GFX_drawFastHLine(GFX_getCursorX(), GFX_getCursorY() - 4, GFX_getWidth(), RED);
 }
 
 static void drawButtons(void){
-	btnUp.fillcolor = BLUE;
-	btnUp.label = "+";
-	btnUp.outlinecolor = WHITE;
-	btnUp.textcolor = BLACK;
-	btnUp.textsize = 4;
-	btnUp.x = GFX_getWidth() / 2;
-	btnUp.y = 20;
-	btnUp.width = GFX_getWidth();;
-	btnUp.height = 40;
-	GFX_btnDraw(&btnUp, false);
+	touchArray[0].btnPtr = &btn_pulseUp;
+	touchArray[0].ctrlVarPtr = &timeConfig.pulse;
 
-	btnDown.fillcolor = BLUE;
-	btnDown.label = "-";
-	btnDown.outlinecolor = WHITE;
-	btnDown.textcolor = BLACK;
-	btnDown.textsize = 4;
-	btnDown.x = GFX_getWidth() / 2;
-	btnDown.y = GFX_getHeight() - 20;
-	btnDown.width = GFX_getWidth();;
-	btnDown.height = 40;
-	GFX_btnDraw(&btnDown, false);
+	touchArray[1].btnPtr = &btn_pulseDown;
+	touchArray[1].ctrlVarPtr = &timeConfig.pulse;
 
-	/* Replacement for LED */
-	btnStatus.outlinecolor = RED;
-	btnStatus.textsize = 3;
-	btnStatus.x = GFX_getWidth() / 2;
-	btnStatus.y = GFX_getHeight() - 70;
-	btnStatus.width = GFX_getWidth() - 20;
-	btnStatus.height = 40;
-	drawStatus(ON);
+	touchArray[2].btnPtr = &btn_pauseUp;
+	touchArray[2].ctrlVarPtr = &timeConfig.pause;
+
+	touchArray[3].btnPtr = &btn_pauseDown;
+	touchArray[3].ctrlVarPtr = &timeConfig.pause;
+
+	touchArray[4].btnPtr = &btn_activeUp;
+	touchArray[4].ctrlVarPtr = &timeConfig.active;
+
+	touchArray[5].btnPtr = &btn_activeDown;
+	touchArray[5].ctrlVarPtr = &timeConfig.active;
+
+	touchArray[6].btnPtr = &btn_inactiveUp;
+	touchArray[6].ctrlVarPtr = &timeConfig.inactive;
+
+	touchArray[7].btnPtr = &btn_inactiveDown;
+	touchArray[7].ctrlVarPtr = &timeConfig.inactive;
+
+	touchArray[8].btnPtr = &btn_totalUp;
+	touchArray[8].ctrlVarPtr = &timeConfig.total;
+
+	touchArray[9].btnPtr = &btn_totalDown;
+	touchArray[9].ctrlVarPtr = &timeConfig.total;
+
+	uint8_t i;
+	for(i = 0; i < BTN_COUNT; i++){
+		touchArray[i].btnPtr->fillcolor = BLUE;
+		touchArray[i].btnPtr->outlinecolor = WHITE;
+		touchArray[i].btnPtr->textcolor = BLACK;
+		touchArray[i].btnPtr->textsize = 2;
+		touchArray[i].btnPtr->width = 35;
+		touchArray[i].btnPtr->height = 30;
+		touchArray[i].touctTimestamp = 0;
+
+		if((i % 2) == 0){
+			touchArray[i].btnPtr->x = 175;
+			touchArray[i].btnPtr->y = 15 + 52 * (i / 2);
+			touchArray[i].btnPtr->label = "+";
+			touchArray[i].increment = 1;
+		}else{
+			touchArray[i].btnPtr->x = 220;
+			touchArray[i].btnPtr->y = 35 + 52 * (i / 2);
+			touchArray[i].btnPtr->label = "-";
+			touchArray[i].increment = -1;
+		}
+		GFX_btnDraw(touchArray[i].btnPtr, false);
+	}
+
+	btn_start.fillcolor = GREEN;
+	btn_start.label = "Start";
+	btn_start.outlinecolor = WHITE;
+	btn_start.textcolor = BLACK;
+	btn_start.textsize = 2;
+	btn_start.x = 120;
+	btn_start.y = 290;
+	btn_start.width = 220;
+	btn_start.height = 40;
+	GFX_btnDraw(&btn_start, false);
+
 }
 
-static void setHeater(bool state){
-	if(state == ON){
-		PIN_HIGH(HEAT_PORT, HEAT_PIN);
-	}else{
-		PIN_LOW(HEAT_PORT, HEAT_PIN);
+static void drawCfgVar(uint8_t id)
+{
+	GFX_setTextSize(4);
+	GFX_setCursor(0,   touchArray[id].cursorY);
+
+	uint16_t outVal = *touchArray[id].ctrlVarPtr;
+
+	if((id > 3) && (id < 8)){
+		outVal *= 1000;
 	}
 
-	if(lastState != state){
-		drawStatus(state);
-	}
-
-	lastState = state;
+	GFX_printDec(outVal);
 }
 
-static void processButtons(TSPoint* touchPoint){
-
-	if((TCTRL_micros() - upBtnTime) > 300000){
-		GFX_btnUpdate(&btnDown, touchPoint);
-	}/* else btnUp recently pressed so do not pass touch to btnDown */
-
-	if((TCTRL_micros() - downBtnTime) > 300000){
-		GFX_btnUpdate(&btnUp, touchPoint);
-	}/* else btnDown recently pressed so do not pass touch to btnUp */
-
-	if(GFX_btnJustPressed(&btnUp)){
-		requestedPulse++;
-		drawRequestedTemp();
-		upBtnTime = TCTRL_micros();
-		reqTempChangeTime = TCTRL_micros();
-	}
-
-	if(GFX_btnIsPressed(&btnUp)){
-		if((TCTRL_micros() - upBtnTime) > 250000){
-			upBtnTime = TCTRL_micros();
-			requestedPulse += 10;
-			drawRequestedTemp();
-			reqTempChangeTime = TCTRL_micros();
-		}
-	}
-
-	if(GFX_btnJustPressed(&btnDown)){
-		requestedPulse--;
-		drawRequestedTemp();
-		downBtnTime = TCTRL_micros();
-		reqTempChangeTime = TCTRL_micros();
-	}
-
-	if(GFX_btnIsPressed(&btnDown)){
-		if((TCTRL_micros() - downBtnTime) > 250000){
-			downBtnTime = TCTRL_micros();
-			requestedPulse -= 10;
-			drawRequestedTemp();
-			reqTempChangeTime = TCTRL_micros();
-		}
-	}
-
-	if(requestedPulse > 400){
-		requestedPulse = 400;
-		drawRequestedTemp();
-	}else if(requestedPulse < 250){
-		requestedPulse = 250;
-		drawRequestedTemp();
-	}
-
-	if(reqTempChangeTime > 0){
-		if((TCTRL_micros() - reqTempChangeTime) > 1000000){
-			eeprom_update_byte(&savedRequestedPulse, requestedPulse);
-			reqTempChangeTime = 0;
-		}
-	}
-}
 
 static void init( void ){
+	/* Init uart for debugging */
 	UART_init();
-	PIN_OUTPUT(OUT_PORT, OUT_PIN);
 
-	requestedPulse = eeprom_read_word(&savedRequestedPulse);
-	if(requestedPulse < 10){
-		requestedPulse = 10;
-	}else if(requestedPulse > 200){
-		requestedPulse = 200;
+	/* Read timing configuration from EEPROM and initialize counter. */
+	timeConfig.pulse = eeprom_read_byte(&savedPulse);
+	if((timeConfig.pulse < 10) || (timeConfig.pulse > 200)){
+		timeConfig.pulse = 10;
 	}
 
-	requestedPause = eeprom_read_word(&savedRequestedPause);
-	if(requestedPause < 3){
-		requestedPause = 3;
-	}else if(requestedPause > 100){
-		requestedPause = 100;
+	timeConfig.pause = eeprom_read_byte(&savedPause);
+	if((timeConfig.pause < 3) || (timeConfig.pause > 100)){
+		timeConfig.pause = 3;
 	}
 
+	timeConfig.active = eeprom_read_byte(&savedActive);
+	if((timeConfig.active < 1) || (timeConfig.active > 20)){
+		timeConfig.active = 1;
+	}
+
+	timeConfig.inactive = eeprom_read_byte(&savedInactive);
+	if((timeConfig.inactive < 10) || (timeConfig.inactive > 50)){
+		timeConfig.inactive = 10;
+	}
+
+	timeConfig.total = eeprom_read_byte(&savedTotal);
+	if((timeConfig.total < 10) || (timeConfig.total > 60)){
+		timeConfig.total = 10;
+	}
+
+	TCTRL_init(&timeConfig);
+
+	/* Initialize display */
 	main_ID = GFX_init();
 	UART_printStr("\n\rLCD ID: 0x");
 	UART_printHex(main_ID);
 
-	TCTRL_start();
-
-	GFX_setRotation(0);
+	GFX_setRotation(2);
 	GFX_fillScreen(BLACK);
 	GFX_setTextColor(GREEN, GREEN);
 
+	refreshScr();
 	drawButtons();
+}
+
+void MAIN_timerControl(bool start)
+{
+	if(start){
+		eeprom_update_byte(&savedPulse, timeConfig.pulse);
+		eeprom_update_byte(&savedPulse, timeConfig.pause);
+		eeprom_update_byte(&savedPulse, timeConfig.active);
+		eeprom_update_byte(&savedPulse, timeConfig.inactive);
+		eeprom_update_byte(&savedPulse, timeConfig.total);
+
+		btn_start.label = "Stop";
+		btn_start.fillcolor = RED;
+		btn_start.textcolor = YELLOW;
+		GFX_btnDraw(&btn_start, false);
+		btn_start.label = "Start";
+		btn_start.fillcolor = GREEN;
+		btn_start.textcolor = BLACK;
+		timerStarted = true;
+
+//		TCTRL_start();
+	}else{
+		btn_start.label = "Start";
+		btn_start.fillcolor = GREEN;
+		btn_start.textcolor = BLACK;
+
+		GFX_btnDraw(&btn_start, false);
+		timerStarted = false;
+	}
+}
+
+
+void MAIN_processButtons(TSPoint* touchPoint){
+
+	uint32_t timestamp = TCTRL_micros();
+
+	uint8_t i;
+	for(i = 0; i < BTN_COUNT; i++){
+		GFX_btnUpdate(touchArray[i].btnPtr, touchPoint);
+
+		if(GFX_btnJustPressed(&btn_pulseUp)){
+			*touchArray[i].ctrlVarPtr += touchArray[i].increment;
+			touchArray[i].touctTimestamp = timestamp;
+			drawCfgVar(i);
+		}
+
+		if(GFX_btnIsPressed(&btn_pulseUp)){
+			if((timestamp - touchArray[i].touctTimestamp) > LONG_PRESS_TIME){
+				*touchArray[i].ctrlVarPtr += touchArray[i].increment * 10;
+				touchArray[i].touctTimestamp = timestamp;
+				drawCfgVar(i);
+			}
+		}
+	}
+	GFX_btnUpdate(&btn_start, touchPoint);
+
+	if(GFX_btnJustReleased(&btn_start)){
+		MAIN_timerControl(ON);
+	}else if(timerStarted){
+		MAIN_timerControl(OFF);
+	}
 }
 
 int main( void )
 {
-	TSPoint point;
-
 	init();
 
 	for(;;){
-
-		TS_getPoint(&point);
-
-//		/* Hack to compensate for broken touch which only detects Y coordinates. */
-//		point.x = 120;
-//		if(point.y < 0){
-//			point.z = 0;
-//		}else{
-//			UART_printStr("\n\r y:");
-//			UART_printDec((uint16_t)point.y);
-//
-//			point.z = 10;
-//			if(point.y > 10){
-//				if(point.y > 200){
-//					point.y = 300;
-//				}else if(point.y < 50){
-//					point.y = 20;
-//				}
-//			}
-//		}
-
-		processButtons(&point);
-
+		TCTRL_process();
 	}
 
 	return 0;

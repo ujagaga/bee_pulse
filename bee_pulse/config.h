@@ -68,9 +68,11 @@
 #define YM_PORT		PORTB
 #define XP_PORT		PORTB
 
-/* Heater relay pin */
-#define OUT_PORT	PORTB
-#define OUT_PIN		PB5
+/* Out pin */
+#define OUT_PORT1	PORTB
+#define OUT_PIN1	PB4
+#define OUT_PORT2	PORTB
+#define OUT_PIN2	PB5
 
 /* UART pins PD0 and PD1 are left unused */
 

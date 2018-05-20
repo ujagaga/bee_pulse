@@ -10,16 +10,21 @@
 
 #include <stdint.h>
 
+typedef struct{
+	uint8_t pulse;
+	uint8_t pause;
+	uint8_t active;
+	uint8_t inactive;
+	uint8_t total;
+}timing_t;
+
 extern volatile uint32_t timer1_micros;
 
-/* Returns microseconds passed divided by 2 */
-#define TCTRL_micros() 	timer1_micros
+/* Returns microseconds */
+#define TCTRL_micros() 		(timer1_micros << 2)
 
+extern void TCTRL_init(timing_t* timingParameters);
+extern void TCTRL_process(void);
 extern void TCTRL_start(void);
-extern void TCTRL_setPulse(uint8_t val);
-extern void TCTRL_setPause(uint8_t val);
-extern void TCTRL_setActive(uint8_t val);
-extern void TCTRL_setInactive(uint8_t val);
-extern void TCTRL_setTotal(uint8_t val);
 
 #endif /* TIME_CTRL_H_ */
